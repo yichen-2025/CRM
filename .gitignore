@@ -1,0 +1,35 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ---------- 虚拟环境（349 MB，绝不能提交）----------
+.venv/
+venv/
+env/
+
+# ---------- 测试与构建缓存 ----------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# ---------- IDE / 编辑器 ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---------- Streamlit ----------
+.streamlit/secrets.toml
+
+# ---------- Office 临时锁文件（打开 Word/PPT 时自动生成，关闭即消失）----------
+~$*
+*.tmp
+
+# ---------- 操作系统 ----------
+.DS_Store
+Thumbs.db
+desktop.ini

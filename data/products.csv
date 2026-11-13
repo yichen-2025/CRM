@@ -1,0 +1,5 @@
+﻿product_id,product_name,product_type,risk_level,risk_score
+P001,稳健理财A,银行理财,低风险,1
+P002,指数基金B,基金,中风险,3
+P003,黄金积存C,贵金属,中风险,3
+P004,成长基金D,基金,高风险,5
