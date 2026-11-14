@@ -33,3 +33,6 @@ dist/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ---------- 参考资料（examples/ 下的截图与说明不入库）----------
+examples/
