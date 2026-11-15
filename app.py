@@ -957,7 +957,8 @@ with tab_assoc:
 
     else:
 
-        purchased_ids = list(latest_basket["product_id"])
+        # 同一客户同一天重复购买同一产品时，订单文案只保留一次
+        purchased_ids = list(dict.fromkeys(latest_basket["product_id"]))
 
         st.markdown(
             "当前订单："
