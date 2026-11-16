@@ -533,6 +533,128 @@ def min_distance_of(recommendation):
     return float(row["distance"]), row["product_name"]
 
 
+def explain_rule(transactions, antecedent, consequent):
+    """重算一条规则的分子分母，供页面手算核对。"""
+
+    baskets = build_baskets(transactions)
+    total = len(baskets)
+
+    pair_count = sum(
+        1 for items in baskets if {antecedent, consequent} <= items
+    )
+    antecedent_count = sum(1 for items in baskets if antecedent in items)
+    consequent_count = sum(1 for items in baskets if consequent in items)
+
+    support = pair_count / total if total else 0.0
+    confidence = pair_count / antecedent_count if antecedent_count else 0.0
+
+    if total and consequent_count:
+        lift = confidence / (consequent_count / total)
+    else:
+        lift = 0.0
+
+    return {
+        "total": total,
+        "pair_count": pair_count,
+        "antecedent_count": antecedent_count,
+        "consequent_count": consequent_count,
+        "support": support,
+        "confidence": confidence,
+        "lift": lift
+    }
+
+
+# ==============================
+# 3.8 商品相似度（最近邻的商品视角）
+# ==============================
+
+def product_distance(source, target, config=None):
+    """
+    产品—产品距离：把 source 的区间中点当作查询值，复用同一套距离函数。
+
+    config 缺省使用多维模式（与「综合匹配分」一致），保证商品视角与
+    客户视角的尺度相同。
+    """
+
+    config = config or ALGORITHM_CONFIG["multi"]
+    weights = config["weights"]
+
+    d_risk = distance_risk(
+        float(source["risk_score"]),
+        float(target["risk_score"]),
+        config["risk_scale"]
+    )
+
+    d_income = distance_in_range(
+        (float(source["income_min"]) + float(source["income_max"])) / 2,
+        float(target["income_min"]),
+        float(target["income_max"]),
+        INCOME_SPAN_REF
+    )
+
+    d_age = distance_in_range(
+        (float(source["age_min"]) + float(source["age_max"])) / 2,
+        float(target["age_min"]),
+        float(target["age_max"]),
+        AGE_DENOM
+    )
+
+    total = (
+        weights["risk"] * d_risk ** 2
+        + weights["income"] * d_income ** 2
+        + weights["age"] * d_age ** 2
+    )
+
+    return min(math.sqrt(total), 1.0)
+
+
+def similar_products(product_id, products, top_n=TOP_N):
+    """按产品属性距离取最相似的 top_n 款产品。"""
+
+    columns = [
+        "product_id",
+        "product_name",
+        "product_type",
+        "risk_level",
+        "distance",
+        "similarity"
+    ]
+
+    matched = products.loc[products["product_id"] == product_id]
+
+    if matched.empty:
+        return pd.DataFrame(columns=columns)
+
+    source = matched.iloc[0]
+    rows = []
+
+    for _, target in products.iterrows():
+
+        if target["product_id"] == product_id:
+            continue
+
+        distance = product_distance(source, target)
+
+        rows.append({
+            "product_id": target["product_id"],
+            "product_name": target["product_name"],
+            "product_type": target["product_type"],
+            "risk_level": target["risk_level"],
+            "distance": distance,
+            "similarity": 100.0 * (1.0 - distance)
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["distance", "product_name"])
+        .head(top_n)
+        .reset_index(drop=True)
+    )
+
+
 # ==============================
 # 4. 产品推荐算法（统一管线）
 # ==============================
@@ -904,6 +1026,33 @@ def render_product_card(column, product_id, extra_lines=()):
             st.caption(line)
 
 
+with st.expander("查看商品相似推荐（最近邻的商品视角）"):
+    st.caption(
+        "把产品的年龄区间中点、收入区间中点与风险评分当作查询值，"
+        "复用同一套距离函数计算产品之间的距离；距离越小越相似。"
+    )
+
+    similar_source = st.selectbox(
+        "选择要对比的产品",
+        options=list(product_lookup.index),
+        format_func=lambda pid: (
+            f"{pid} - {product_lookup.loc[pid, 'product_name']}"
+        ),
+        key="similar_source"
+    )
+
+    similar = similar_products(similar_source, products)
+
+    similar_columns = st.columns(max(len(similar), 1))
+
+    for column, (_, item) in zip(similar_columns, similar.iterrows()):
+        render_product_card(
+            column,
+            item["product_id"],
+            [f"相似度 {item['similarity']:.0f} ｜ 距离 {item['distance']:.3f}"]
+        )
+
+
 st.divider()
 
 
@@ -931,17 +1080,47 @@ else:
         customer_orders["buy_date"] == latest_date
     ]
 
-rules = mine_rules(transactions)
-
-
 # ---------- ① 关联算法 ----------
 
 with tab_assoc:
 
+    with st.expander("规则参数设置", expanded=False):
+
+        min_support = st.slider(
+            "支持度下限",
+            min_value=0.02,
+            max_value=0.20,
+            value=float(MIN_SUPPORT),
+            step=0.01
+        )
+        min_confidence = st.slider(
+            "置信度下限",
+            min_value=0.30,
+            max_value=1.00,
+            value=float(MIN_CONFIDENCE),
+            step=0.05
+        )
+        min_lift = st.slider(
+            "兴趣度下限",
+            min_value=1.0,
+            max_value=5.0,
+            value=float(MIN_LIFT),
+            step=0.1
+        )
+
+        st.caption(
+            "默认值与 README 一致：支持度 ≥ 0.06、置信度 ≥ 0.5、兴趣度 > 1；"
+            "拖动滑块可现场观察规则数量的变化。"
+        )
+
+    rules = mine_rules(
+        transactions, min_support, min_confidence, min_lift
+    )
+
     st.caption(
         f"共 {len(build_baskets(transactions))} 个订单，"
-        f"规则库 {len(rules)} 条（支持度 ≥ {MIN_SUPPORT}，"
-        f"置信度 ≥ {MIN_CONFIDENCE}，兴趣度 > {MIN_LIFT}）"
+        f"规则库 {len(rules)} 条（支持度 ≥ {min_support:.2f}，"
+        f"置信度 ≥ {min_confidence:.2f}，兴趣度 > {min_lift:.1f}）"
     )
 
     if latest_basket.empty:
@@ -1013,6 +1192,60 @@ with tab_assoc:
         })
 
         st.dataframe(rule_view, use_container_width=True, hide_index=True)
+
+    with st.expander("手算核对（任选一条规则）"):
+
+        if rules.empty:
+            st.caption("当前阈值下没有规则，调低阈值后再核对。")
+        else:
+            rule_labels = [
+                f"{row['antecedent']} → {row['consequent']}"
+                for _, row in rules.iterrows()
+            ]
+
+            picked_label = st.selectbox(
+                "选择规则",
+                options=rule_labels,
+                key="rule_check"
+            )
+
+            picked = rules.iloc[rule_labels.index(picked_label)]
+
+            check = explain_rule(
+                transactions,
+                picked["antecedent"],
+                picked["consequent"]
+            )
+
+            left_name = (
+                f"{picked['antecedent']} "
+                f"{product_lookup.loc[picked['antecedent'], 'product_name']}"
+            )
+            right_name = (
+                f"{picked['consequent']} "
+                f"{product_lookup.loc[picked['consequent'], 'product_name']}"
+            )
+
+            st.markdown(
+                f"- 订单总数 N = **{check['total']}**\n"
+                f"- 同时出现 {left_name} 与 {right_name}："
+                f"**{check['pair_count']}** 单\n"
+                f"- 出现前项 {left_name}："
+                f"**{check['antecedent_count']}** 单\n"
+                f"- 出现后项 {right_name}："
+                f"**{check['consequent_count']}** 单"
+            )
+
+            st.markdown(
+                f"支持度 = {check['pair_count']} / {check['total']} = "
+                f"**{check['support']:.3f}**\n\n"
+                f"置信度 = {check['pair_count']} / "
+                f"{check['antecedent_count']} = "
+                f"**{check['confidence']:.3f}**\n\n"
+                f"兴趣度 = {check['confidence']:.3f} / "
+                f"({check['consequent_count']} / {check['total']}) = "
+                f"**{check['lift']:.3f}**"
+            )
 
 
 # ---------- ② 最近邻算法 ----------
@@ -1141,6 +1374,29 @@ with st.expander("查看分维度距离明细"):
     st.caption(
         "归一化距离：0 表示完全匹配，1 表示差异最大。"
         "综合分由加权欧氏距离换算而来。"
+    )
+
+    active_weights = (
+        weights
+        if weights is not None
+        else ALGORITHM_CONFIG[sort_mode]["weights"]
+    )
+    top_row = product_lookup.loc[best_product["product_id"]]
+
+    st.caption(
+        f"首选 {best_product['product_name']} 的计算："
+        f"权重 风险 {active_weights['risk']:.2f} / "
+        f"收入 {active_weights['income']:.2f} / "
+        f"年龄 {active_weights['age']:.2f}，"
+        f"风险距离 = |{RISK_SCORE[customer['risk_level']]} − "
+        f"{int(top_row['risk_score'])}| × "
+        f"{ALGORITHM_CONFIG[sort_mode]['risk_scale']} = "
+        f"{best_product['d_risk']:.3f}，"
+        f"收入距离 {best_product['d_income']:.3f}，"
+        f"年龄距离 {best_product['d_age']:.3f}，"
+        f"综合距离 {best_product['distance']:.3f} → "
+        f"匹配分数 = 100 × (1 − {best_product['distance']:.3f}) = "
+        f"{best_product['score']:.0f}。"
     )
 
     detail = recommendation[[
